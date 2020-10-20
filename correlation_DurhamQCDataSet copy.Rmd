@@ -1,0 +1,330 @@
+---
+title: "An example of time-series exploration and analysis"
+author: "Sean David McAtee"
+date: "updated `r format(Sys.Date(), format = '%d %B %Y')`"
+output:
+  rmarkdown::html_document:
+    theme: paper #cosmo
+    highlight: pygments
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+knitr::opts_chunk$set(fig.width=6, fig.height=4, fig.align = "center")
+```
+<br />
+```{r results='hide', message=FALSE}
+library(readr)
+library(magrittr)
+library(plotly)
+library(chron)
+library(dplyr)
+library(tidyr)
+library(tibble)
+```
+
+<br />
+
+## Background
+This document will show a brief temperature time-series analysis using three NOAA quality control datasets. The analysis will function as proof and practice for concepts that will be employed on more complex temperature time-series data. While researching analytical techniques and working through issues during analysis, it became apparent that time-series temperature data requires special consideration in a few key aspects. Namely, distribution and seasonality. The discovery and treatment for those aspects is presented below.
+
+<br/>
+
+### Outline
+The main analytical step employed will be pairwise correlation between weather stations. There are some assumptions that will be checked first to determine the proper correlation method to use. Following the correlation test the data will be deseasonalized and explored to help inform future directions of analysis.
+
+<br />
+
+### Data
+Weather station data was downloaded from https://www.ncdc.noaa.gov/crn/qcdatasets.html  
+
+Three weather stations were picked for this analysis, two of which are in the same town while the third is in a different state. 
+Durham, North Carolina weather station data from the two stations labeled 'N' and 'SSW' were chosen for the years 2017 to 2020. Data from the distant station in Manhattan, Kansas was gathered for the same years. The columns containing date, local time, and temperature were selected for each location.
+
+The data was parsed as follows, for all years listed.
+```{r eval=FALSE, fig.show='hold'}
+colNames <- readr::read_delim("/path/to/ColNames.txt", delim = " ", col_names = FALSE) %>% unlist()
+durhamN2017 <- readr::read_delim( "/path/to/CRNH0203-2017-NH_Durham_2_N.txt",
+  delim = " ", col_names = durhamColNames) %>% dplyr::select(LST_DATE, LST_TIME, T_CALC)
+durhamSSW2017 <- readr::read_delim( "/path/to/CRNH0203-2017-NH_Durham_2_SSW.txt",
+  delim = " ", col_names = durhamColNames) %>% dplyr::select(LST_DATE, LST_TIME, T_CALC)
+manhattan2017 <- readr::read_delim( "/path/to/CRNH0203-2017-KS_Manhattan_6_SSW.txt",
+  delim = " ", col_names = durhamColNames) %>% dplyr::select(LST_DATE, LST_TIME, T_CALC)
+```  
+
+```{r echo=FALSE, results='hide', message=FALSE, warning=FALSE}
+allTemps <- read_csv("/Users/smcatee/Desktop/TF/IBUTTON/PracticeData/allTemps.csv")
+```
+
+<br />
+
+### Clean
+The loaded data were combined and cleaned. The code chunk below shows all steps taken, with limited explanations for each step. The document "An example of data cleaning" details some useful cleaning, visualizing and generating steps on a particularly messy(realistic) dataset.
+
+```{r eval=FALSE}
+durhamN <- rbind(durhamN2017,durhamN2018, durhamN2019, durhamN2020)
+durhamSSW <- rbind(durhamSSW2017, durhamSSW2018, durhamSSW2019, durhamSSW2020)
+manhattan <- rbind(manhattan2017, manhattan2018, manhattan2019, manhattan2020)
+
+durhamN$T_CALC %<>% as.numeric()
+durhamSSW$T_CALC %<>% as.numeric()
+manhattan$T_CALC %<>% as.numeric()
+
+# find the number that is used as NA value
+durhamSSW$T_CALC %>% unique() %>% sort()
+
+durhamN$T_CALC[durhamN$T_CALC == -9999] <- NA
+durhamSSW$T_CALC[durhamSSW$T_CALC == -9999] <- NA
+manhattan$T_CALC[manhattan$T_CALC == -9999] <- NA
+
+# Convert dates and times to chron format
+durhamSSW$LST_DATE <- as.dates(as.character(durhamSSW$LST_DATE), format = "ymd")
+durhamN$LST_DATE <- as.dates(as.character(durhamN$LST_DATE), format = "ymd")
+manhattan$LST_DATE <- as.dates(as.character(manhattan$LST_DATE), format = "ymd")
+
+durhamSSW$LST_TIME %<>% as.character() %>% strtrim(2) %>% paste0(":","00:00") %>% as.times()
+durhamN$LST_TIME %<>% as.character() %>% strtrim(2) %>% paste0(":","00:00") %>% as.times()
+manhattan$LST_TIME %<>% as.character() %>% strtrim(2) %>% paste0(":","00:00") %>% as.times()
+
+# Combine durham tables
+durhamTemps <- full_join(x = durhamSSW, y = durhamN, by = c("LST_DATE", "LST_TIME"))
+allTemps <- full_join(x = durhamTemps, y = manhattan, by = c("LST_DATE", "LST_TIME"))
+# last row is weird, take it out
+allTemps <- allTemps[-nrow(allTemps),]
+
+colnames(allTemps) <- c("Date", "Time", "DurhamSSW", "DurhamN", "Manhattan")
+
+#pivot longer for plotting
+allTemps <- pivot_longer(allTemps, cols = 3:5, names_to = "Location", values_to = "Temperature")
+```
+
+<br />
+
+### Explore
+The data is now cleaned and the analysis workflow can start. First a few plots will be generated to get a sense for the data and to view its seasonality.
+
+```{r message=FALSE, warning=FALSE, fig.height=2, fig.show='hold', fig.cap="Figure: Temperature quartiles displayed over the intervals: 24 hours, 12 months, 5 years."}
+#daily
+ggplot(allTemps[allTemps$Location == "Manhattan",],
+       aes(x=Time %>% as.character() %>% substr(0,2), y=Temperature)) +
+  geom_boxplot() + theme(axis.title.x=element_blank(), axis.ticks.x=element_blank(), axis.ticks.y=element_blank()) +
+  ylab("ºC")
+
+#monthly
+ggplot(allTemps[allTemps$Location == "Manhattan",],
+       aes(x=Date %>% chron::dates() %>% months() %>% factor(), y=Temperature)) +
+  geom_boxplot() + theme(axis.title.x=element_blank(),axis.ticks.x=element_blank(), axis.ticks.y=element_blank()) +
+  ylab("ºC")
+
+#yearly
+ggplot(allTemps[allTemps$Location == "Manhattan",],
+       aes(x=Date %>% years() %>% factor(), y=Temperature)) + xlab("Time") +
+  geom_boxplot() + theme(axis.ticks.x=element_blank(), axis.ticks.y=element_blank()) +
+  ylab("ºC")
+```
+<br />
+
+Interestingly, there are a few data points from 2016 in this set. Also, it is apparent that there is a yearly and daily seasonal trend, and no obvious trend over the years. The seasonality should not affect correlation, so that will not be explored until later.
+
+<br /><br />
+
+### Reduce
+Some quick stats can roughly compare the temperature datasets to each other. Tukey's Five Numbers can give a sense of the temperature distribution at each location.
+
+```{r message=FALSE, warning=FALSE, results='hold'}
+TFNtxt <- "Tukey's Five Numbers "
+paste(TFNtxt,"DurhamN",paste(fivenum(allTemps$Temperature[allTemps$Location == "DurhamN"]),collapse=" "))
+paste(TFNtxt,"DurhamSSW",paste(fivenum(allTemps$Temperature[allTemps$Location == "DurhamSSW"]),collapse=" "))
+paste(TFNtxt,"Manhattan",paste(fivenum(allTemps$Temperature[allTemps$Location == "Manhattan"]),collapse=" "))
+```
+<br />
+
+All stations have similar high/low values, but there is a noticeable difference in the quartiles for the Manhattan station. The two Durham stations on the other hand are highly similar.
+
+<br /><br />
+
+### Compare
+Correlation lends its self well for comparing time-series temperature data. The Pearson correlation would be the first choice since it is not only the most widely used, but it is also faster, O(n), than the rank based methods that sort data, O(nlogn), before correlating it.  
+To run a Pearson correlation with a clean conscience the data must be checked for normality. A visual check for normality can be done with a QQ plot and a density plot.
+
+```{r message=FALSE, warning=FALSE, out.width="50%", fig.align='default',fig.show='hold'}
+
+# QQ plot of all temp sets
+ggplot(allTemps, aes(sample=Temperature)) +
+  geom_qq_line() + geom_qq(aes(colour=Location), alpha=0.3, size=0.6) + ylim(-35, 35) + scale_colour_grey() +
+  theme(axis.text=element_text(size=12),axis.ticks.x=element_blank(), axis.ticks.y=element_blank()) +
+  xlab("Theoretical") + ylab("Samples") + ggtitle("QQ Plot")
+
+# density plot of all temp sets
+ggplot(allTemps, aes(x=Temperature)) +
+  geom_density(aes(color=Location), size=0.6) + scale_colour_grey() +
+  theme(axis.text=element_text(size=12),axis.ticks.x=element_blank(), axis.ticks.y=element_blank()) + 
+  xlab("ºC") + ggtitle("Density Plot")
+```
+<br />
+
+The QQ plot does not look perfectly normal for each location, also the density plot shows multiple peaks. A Shapiro-Wilk test can provide a more thorough follow-up.
+
+```{r message=FALSE, warning=FALSE, results='hold'}
+#shaprio.test() can only take up to 5000 values; there are 32806 values per location
+randsampleDurhamN <- filter(allTemps, Location == "DurhamN")[sample(1:32806, 5000, replace=FALSE),]
+randsampleDurhamSSW <- filter(allTemps, Location == "DurhamSSW")[sample(1:32806, 5000, replace=FALSE),]
+randsampleManhattan <- filter(allTemps, Location == "Manhattan")[sample(1:32806, 5000, replace=FALSE),]
+
+swTestDurhamN <- randsampleDurhamN %>% dplyr::select(Temperature) %>% unlist() %>% shapiro.test()
+swTestDurhamSSW <- randsampleDurhamSSW %>% dplyr::select(Temperature) %>% unlist() %>% shapiro.test()
+swTestManhattan <- randsampleManhattan %>% dplyr::select(Temperature) %>% unlist() %>% shapiro.test()
+
+paste("DurhamN   -- W-stat:",round(swTestDurhamN$statistic,4),"   p-value:" ,swTestDurhamN$p.value)
+paste("DurhamSSW -- W-stat:",round(swTestDurhamSSW$statistic,4),"   p-value:" ,swTestDurhamSSW$p.value)
+paste("Manhattan -- W-stat:",round(swTestManhattan$statistic,4),"   p-value:" ,swTestManhattan$p.value)
+```
+<br />
+
+For all three temperature datasets the Shapiro-Wilk null hypothesis is rejected, so none of the datasets are normally distributed. A Pearson correlation, therefore, can not be used for comparison. A non-parametric correlation test can be used instead of the Pearson correlation. In this case a Kendall's Tau correlation will be used.
+
+```{r message=FALSE, warning=FALSE, results='hold'}
+ktCorDurhamNDurhamSSW <- cor.test(allTemps$Temperature[allTemps$Location == "DurhamN"], 
+         allTemps$Temperature[allTemps$Location == "DurhamSSW"], 
+         use = "pairwise.complete.obs", method = "kendall")
+ktCorDurhamNManhattan <- cor.test(allTemps$Temperature[allTemps$Location == "DurhamN"], 
+         allTemps$Temperature[allTemps$Location == "Manhattan"], 
+         use = "pairwise.complete.obs", method = "kendall")
+ktCorDurhamSSWManhattan <- cor.test(allTemps$Temperature[allTemps$Location == "DurhamSSW"], 
+         allTemps$Temperature[allTemps$Location == "Manhattan"], 
+         use = "pairwise.complete.obs", method = "kendall")
+
+prntTxt <- c("  -- kt-cor:","    z-stat:","    p-val:")
+paste("DurhamN & DurhamSSW",prntTxt[1], round(ktCorDurhamNDurhamSSW$estimate,4), prntTxt[2],
+      round(ktCorDurhamNDurhamSSW$statistic,4), prntTxt[3], ktCorDurhamNDurhamSSW$p.value)
+paste("DurhamN & Manhattan",prntTxt[1], round(ktCorDurhamNManhattan$estimate,4), prntTxt[2],
+      round(ktCorDurhamNManhattan$statistic,4), prntTxt[3], ktCorDurhamNManhattan$p.value)
+paste("DurhamSSW & Manhattan",prntTxt[1], round(ktCorDurhamSSWManhattan$estimate,4), prntTxt[2],
+      round(ktCorDurhamSSWManhattan$statistic,4), prntTxt[3], ktCorDurhamSSWManhattan$p.value)
+```
+<br />
+
+The two Durham stations have a strong correlation to each other (`r round(ktCorDurhamNDurhamSSW$estimate,4)`) while the correlations between the Manhattan station and the two Durham stations is moderate, around `r round((ktCorDurhamNManhattan$estimate+ktCorDurhamSSWManhattan$estimate)/2,4)`
+
+<br/>
+
+### Explore, again
+
+The QQ and density plots as well as the Kendall's Tau test indicate that the Manhattan dataset has a different distribution than the Durham sets. A simple way to compare two sets with different distributions is to plot their difference.
+```{r message=FALSE, warning=FALSE}
+manhattanDurhamNDifference <- allTemps$Temperature[allTemps$Location == "Manhattan"] -
+  allTemps$Temperature[allTemps$Location == "DurhamN"]
+hist(manhattanDurhamNDifference, xlab = "ºC", main="Manhattan and Durham N temperature difference")
+fivenum(manhattanDurhamNDifference)
+```
+<br />
+
+The average temperature from 2017 to 2020 in Manhattan, Kansas is about 4.6 degrees higher than Durham, North Carolina 'N'. It is interesting to note that about 50% of the temperature variation is only ±5ºC around the mean, however the range of outliers is a massive ±30ºC.  
+It is possible to further explore the variation in temperature at each location by removing seasonality.
+
+<br />
+
+### Deseasonalize
+The yearly and daily seasonal effects are apparent when viewing this data in the first few plots. It is possible to view only the daily temperature distribution around the mean for that day. This is done by removing daily seasonality from the data.
+
+First, daily seasonality is removed using a moving average filter. This leaves the yearly seasonality and the residuals.
+```{r message=FALSE, warning=FALSE, results='hold'}
+dayTrendManhattan <- stats::filter(allTemps$Temperature[allTemps$Location == "Manhattan"],
+       filter=c(1/2, rep(1, times=23), 1/2)/24,
+       method="convo",
+       sides=2)
+
+#daily seasonality removed
+plot(dayTrendManhattan, xlab="Hours since 12/31/2016 20:00:00", ylab="ºC", main="Daily Temperature Average")
+```
+<br />
+
+Now it is a simple task to remove the daily seasonal trend by simply subtracting it out of the original time-series. Once that is done a few plots and statistics can dig into the daily temperature distribution.
+```{r message=FALSE, warning=FALSE, out.width="50%", fig.align='default', fig.show='hold'}
+daySeasonEffManhattan <- allTemps$Temperature[allTemps$Location == "Manhattan"] - dayTrendManhattan
+
+plot(daySeasonEffManhattan, xlab="Hours since 12/31/2016 20:00:00", ylab="ºC", main="Deseasonalized Daily Temperature")
+hist(daySeasonEffManhattan, xlab="ºC", main="Daily Temperature Distribution")
+```
+
+```{r message=FALSE, warning=FALSE, results='hold'}
+#There is only one outlier below -13 from the daily mean
+paste("Outliers below -12ºC:  ",
+      paste(round(daySeasonEffManhattan[daySeasonEffManhattan < -12 & !is.na(daySeasonEffManhattan)],2),
+            collapse=" "))
+paste(TFNtxt, paste(fivenum(daySeasonEffManhattan) %>% round(4), collapse=" "))
+```
+<br />
+
+The three locations can be deseasonalized and roughly compared using Tukey's Five Numbers.
+
+```{r message=FALSE, warning=FALSE, results='hold'}
+daySeasonEffDurhamN <- allTemps$Temperature[allTemps$Location == "DurhamN"] - 
+  stats::filter(allTemps$Temperature[allTemps$Location == "DurhamN"],
+                filter=c(1/2, rep(1, times=23), 1/2)/24, method="convo", sides=2)
+
+daySeasonEffDurhamSSW <- allTemps$Temperature[allTemps$Location == "DurhamSSW"] - 
+  stats::filter(allTemps$Temperature[allTemps$Location == "DurhamSSW"],
+                filter=c(1/2, rep(1, times=23), 1/2)/24, method="convo", sides=2)
+
+paste(TFNtxt,"DurhamN",paste(fivenum(daySeasonEffDurhamN)  %>% round(4),collapse=" "))
+paste(TFNtxt,"DurhamSSW",paste(fivenum(daySeasonEffDurhamSSW) %>% round(4),collapse=" "))
+paste(TFNtxt,"Manhattan",paste(fivenum(daySeasonEffManhattan) %>% round(4),collapse=" "))
+```
+<br />
+
+Each location appears to have similar daily temperature distributions, however Manhattan has slightly narrower distributions than Durham. There is also an outlier in the Manhattan set, since this outlier was not present before it may be due to a calculation error when removing seasonality.
+
+<br/>
+
+Quartiles for the distributions of daily temperatures around the mean can be viewed over the period of a year in the same way that the hourly temperature was viewed at the beginning of this document.
+```{r message=FALSE, warning=FALSE, fig.height=2, fig.show='hold'}
+dailyTempDistributionDurhamN <- ggplot(
+  add_column(allTemps[allTemps$Location == "DurhamN",], dailySeasonalEffect = daySeasonEffDurhamN),
+  aes(x=Date %>% chron::dates() %>% months() %>% factor(),y=dailySeasonalEffect)) +
+  geom_boxplot() + theme(axis.title.x=element_blank(),axis.text.x=element_blank(),axis.ticks.x=element_blank()) +
+  ylab("Daily temp distributions")
+
+dailyTempDistributionDurhamSSW <- ggplot(
+  add_column(allTemps[allTemps$Location == "DurhamSSW",], dailySeasonalEffect = daySeasonEffDurhamSSW),
+  aes(x=Date %>% chron::dates() %>% months() %>% factor(),y=dailySeasonalEffect)) +
+  geom_boxplot() + theme(axis.title.x=element_blank(),axis.text.x=element_blank(),axis.ticks.x=element_blank()) +
+  ylab("Daily temp distributions")
+
+dailyTempDistributionManhattan <- ggplot(
+  add_column(allTemps[allTemps$Location == "Manhattan",], dailySeasonalEffect = daySeasonEffManhattan),
+  aes(x=Date %>% chron::dates() %>% months() %>% factor(),y=dailySeasonalEffect)) +
+  geom_boxplot() + xlab("Time") + ylab("Daily temp distributions")
+
+dailyTempDistributionDurhamN
+dailyTempDistributionDurhamSSW
+dailyTempDistributionManhattan
+```
+<br />
+
+It appears that the distribution of daily temperatures does change over the period of a year. This is useful information to know for any further analysis of temperature time-series datasets. It is also interesting to note that the distribution of Manhattan temperatures is narrower than the Durham distributions for every month.
+
+<br /><br />
+
+## Summary
+Through this exploration and analysis a few key takeaways were discovered about the three temperature datasets. Importantly, it was discovered that this temperature data does not follow a normal distribution according to the Shapiro-Wilk test. Taking this into consideration the three datasets were measured for correlation using the Kendall's Tau method. This correlation test showed that the two Durham weather stations had recorded highly correlated temperature readings, while the Manhattan weather station was only moderately correlated to the two Durham stations. Comparing the difference of the 'N' Durham station to the Manhattan station it was learned that Manhattan has a higher average temperature, but narrower distribution, than Durham. Further steps that removed seasonality showed that there is a shift in daily temperature distributions through the year. Namely, a wider distribution around the summer and a narrower distribution around the winter.
+
+<br />
+
+## Next
+This brief analysis can open many doors for further investigation. One of the most important would be determining if this, or any, temperature data can fit a distribution function. Since there are two seasonality components in this data, there could be a combination of distributions at play.
+
+Temperature swings from day to night is an ecologically important stress factor. If this analysis is used for later work to compare biological stress factors at different locations, then a special analysis of temperature ranges and rates of change would be useful.
+
+<br/><br/>
+
+## Sources of inspiration, ideas, and facts  
+Like a good R-user, I always [Read The Manual](https://www.rdocumentation.org/) first.  
+--Time-series concepts and analysis:  
+qq plot and concepts https://rmets.onlinelibrary.wiley.com/doi/full/10.1002/wea.2158  
+decomposition and much much more https://nwfsc-timeseries.github.io/atsa-labs/sec-tslab-decomposition-of-time-series.html  
+correlation algorithm time complexity https://arxiv.org/pdf/1712.01521.pdf  
+--Rmd use and styling  
+styling ideas https://holtzy.github.io/Pimp-my-rmd/  
+pre-loaded themes https://www.datadreaming.org/post/r-markdown-theme-gallery/  
+pre-loaded syntax highlighting https://www.garrickadenbuie.com/blog/pandoc-syntax-highlighting-examples/  

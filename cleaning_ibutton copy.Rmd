@@ -1,0 +1,302 @@
+---
+title: "An example of data cleaning"
+author: "Sean David McAtee"
+date: "`r format(Sys.time(), '%d-%m-%Y')`"
+output:
+  html_document: default
+  pdf_document: default
+---
+
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r results='hide', message=FALSE}
+library(readr)
+library(readxl)
+library(stringr)
+library(chron)
+library(ggplot2)
+library(tibble)
+library(dplyr)
+library(tidyr)
+library(visdat)
+library(httr)
+library(jsonlite)
+```
+
+
+## The Background
+
+For a student research project I helped re-clean data that someone else had previously been cleaned and mutated in Excel. The data was loaded from temperature probes 'IBUTTONs' fixed in intertidal regions on Santa Rosa Island, CA. There are two locations on the island where probes are installed, Beachers Bay 'BB' and Skunk Point 'SP'. At these two locations IBUTTONs are situated at 4 different tidal zones: Low 'L', Mid 'M', High 'H', and Splash 'S'. For each of these tidal levels there are 5 IBUTTONs.
+
+When this data was cleaned and mutated the previous researcher added information to indicate if the IBUTTON was out of water 'OOW' by using tide height. The researcher also added a column to indicate day or night.
+
+## The Data
+
+The Excel file 'IBUTTON_MASTER_DATA.xlsx' contains two sheets 'BB' and 'SP'
+```{r echo=TRUE}
+readxl::excel_sheets("/Users/smcatee/Desktop/TF/IBUTTON/IBUTTON_MASTER_DATA.xlsx")
+```  
+
+```{r eval=FALSE, results='hide', message=FALSE, warning=FALSE}
+masterData_SP <- readxl::read_xlsx("/Users/smcatee/Desktop/TF/IBUTTON/IBUTTON_MASTER_DATA.xlsx", sheet = "SP", na = c("", "NA", "NaN"))
+masterData_BB <- readxl::read_xlsx("/Users/smcatee/Desktop/TF/IBUTTON/IBUTTON_MASTER_DATA.xlsx", sheet = "BB", na = c("", "NA", "NaN"))
+```
+
+```{r echo=FALSE, results='hide', message=FALSE, warning=FALSE}
+masterData_SP <- read_csv("/Users/smcatee/Desktop/TF/IBUTTON/IBUTTON_MASTER_DATA_SP.csv")
+masterData_BB <- read_csv("/Users/smcatee/Desktop/TF/IBUTTON/IBUTTON_MASTER_DATA_BB.csv")
+```
+Both Excel sheets have similar structure.
+
+```{r results='hold'}
+dim(masterData_SP)
+dim(masterData_BB)
+```
+
+The column names are nearly the same values in each table.
+
+```{r}
+tibble::tibble(
+  masterData_BB %>% colnames() %>% head(),
+  masterData_SP %>% colnames() %>% head()
+  )
+```
+
+A limited amount of the these columns are necessary for analysis because they are full of `r NA` or they were used to generate other columns in Excel formulas.  
+
+The only important columns are the date/time, temperature, and OOW. The column names for date and time are a bit confusing so lets explore them...  
+
+```{r}
+head(masterData_BB$`DATE TIME`) %>% paste()
+head(masterData_BB$date) %>% paste()
+head(masterData_BB$time) %>% paste()
+```
+
+It looks like `DATE TIME` might have been an Excel formula that was corrupted, or the column was erased for some reason. The `date` column and the `time` column appear to be the correct dates and times from IBUTTON readings. For a quick sanity check a plot can be made to show the temperature fluxuating through a 24 hour period.
+
+
+
+```{r results='hold', warning=FALSE, message=FALSE}
+masterData_BB %>%
+  select(3, 6) %>%
+  transmute(timeOfDay = hours(as.times(time)), Temp = as.numeric(`L1 Temp`)) %>% 
+  ggplot(aes(timeOfDay, Temp)) +
+    geom_point() +
+    labs(title = "Temp for each day", x = "TimeOfDay", y = "Temp")
+```
+
+In general the temperature peak appears to be at 13:00 and the trough appears to be at 03:00. Looks good, lets move on..  
+
+
+Now there is a distinct list of important columns:  
+- Date = `date`  
+- Time = `time`  
+- Temperature = `L1 Temp`, `L1`, `L2 Temp`, `L2`, ...  
+- OOW = `L1 OOW?`, `L2 OOW?`, ...  
+
+It would be easy enough to select columns by hand, but here is some automation for practice
+```{r}
+# Sanity check
+masterData_SP %>%
+  dplyr::select(matches("(^date$)|(^time$)|(^[LMHS][1-5]( [Tt]emp)?$)|(OOW\\?)", ignore.case = FALSE)) %>%
+  colnames()
+# Sanity check
+masterData_BB %>%
+  dplyr::select(matches("(^date$)|(^time$)|(^[LMHS][1-5]( [Tt]emp)?$)|(OOW\\?)", ignore.case = FALSE)) %>%
+  colnames()
+
+ibutton_SP <- masterData_SP %>%
+  dplyr::select(matches("(^date$)|(^time$)|(^[LMHS][1-5]( [Tt]emp)?$)|(OOW\\?)", ignore.case = FALSE))
+ibutton_BB <- masterData_BB %>%
+  dplyr::select(matches("(^date$)|(^time$)|(^[LMHS][1-5]( [Tt]emp)?$)|(OOW\\?)", ignore.case = FALSE))
+
+```
+
+```{r results='hold'}
+# Sanity check
+ibutton_SP %>% colnames()
+ibutton_BB %>% colnames()
+```
+
+The naming convention is odd, so here is a clearer convention
+
+```{r}
+newColNames <- colnames(ibutton_SP)
+
+newColNames[1] <- "Date"
+
+newColNames[2] <- "Time"
+
+newColNames <- newColNames %>% str_replace(fixed(" Temp"), fixed("_Temperature"))
+
+newColNames <- sapply(newColNames,
+       function(colName) {
+         if_else( str_detect(colName, "^..$"), paste0(colName, "_Temperature"), colName)
+           },
+       USE.NAMES = FALSE
+       )
+
+newColNames <- newColNames %>% str_replace(" OOW.*", "_isSubmerged")
+
+colnames(ibutton_SP) <- newColNames
+colnames(ibutton_BB) <- newColNames
+rm(newColNames)
+
+colnames(ibutton_SP)
+colnames(ibutton_BB)
+```
+
+Visualize the value types
+```{r}
+visdat::vis_dat(ibutton_SP, sort_type = FALSE, warn_large_data = FALSE)
+visdat::vis_dat(ibutton_BB, sort_type = FALSE, warn_large_data = FALSE)
+```
+
+The top segment of ibutton_SP is data while the bottom segment is missing. This is handled easily below.
+Intermittent data is missing in ibutton_BB. The missing data rows are handled in a few more steps. The consequences of the missing data will have to be considered during the data analysis stage.
+
+```{r}
+topNA_row <- is.na(ibutton_SP$L1_Temperature) %>% which() %>% min()
+ibutton_SP <- ibutton_SP[1:(topNA_row - 1),]
+
+temperatureColIndexes <- ibutton_BB %>% colnames() %>% str_detect("Temp") %>% which()
+temp_nonNA_rows <- ibutton_BB[temperatureColIndexes] %>% is.na() %>%
+  rowSums() != length(temperatureColIndexes)
+
+dateTime_nonNA_rows <- ibutton_BB[c(1,2)] %>% is.na() %>% rowSums() != 2
+
+ibutton_BB <- ibutton_BB[temp_nonNA_rows & dateTime_nonNA_rows,]
+```
+
+```{r}
+visdat::vis_dat(ibutton_SP, sort_type = FALSE, warn_large_data = FALSE)
+visdat::vis_dat(ibutton_BB, sort_type = FALSE, warn_large_data = FALSE)
+```
+
+Now that the tables are cleaned the final step is to create an `isDay` column that will use sunrise/sunset data that can be called from 'api.sunrise-sunset.org'
+
+```{r results='hide', warning=FALSE, message=FALSE}
+
+for (step in c(1,2)) {
+  if(step == 1) {curTable <- ibutton_SP}
+  if(step == 2) {curTable <- ibutton_BB}
+
+  # Assemble a vector that will become the isDay column
+  isDayCol <- c()
+  nDays <- 0
+  rowIndex <- 1
+  while( rowIndex <= nrow(curTable) ) {
+    
+    # GET sunrise and sunset times for chunks of rows with the same date
+    # using sunrise-sunset.org REST API
+    curDate <- as.Date(curTable$Date[rowIndex])
+    call <- paste0("https://api.sunrise-sunset.org/json?lat=36.7201600&lng=-4.4203400  &date=", curDate)
+    callContent <- httr::content(GET(call), "text")
+    callContentJSON <- jsonlite::fromJSON(callContent, flatten=TRUE)
+    sunrise <- chron::as.times(stringr::str_remove(callContentJSON$results$sunrise, " AM"))
+    sunset <- chron::as.times(stringr::str_remove(callContentJSON$results$sunset, " PM")) + as.times("12:00:00")
+  
+    # For chunks of rows with the same date compare sunrise/sunset to time
+    while (curDate == as.Date(curTable$Date[rowIndex])) {
+  
+      isDay <- FALSE
+      curTime <- curTable$Time[rowIndex] %>% as.character()
+      isDay <- ifelse(curTime < sunrise | curTime > sunset, FALSE, TRUE)
+      isDayCol <- c(isDayCol, isDay)
+  
+      rowIndex = rowIndex + 1
+      if( rowIndex > nrow(curTable) ) { break }
+    }
+  }
+  curTable <- tibble::add_column(curTable, isDay=isDayCol, .after = "Time")
+  curTable %>% colnames()
+  curTable$isDay %>% table()
+  
+  if(step == 1) {ibutton_SP <- curTable}
+  if(step == 2) {ibutton_BB <- curTable}
+}
+```
+Checking that the isDay column produced only TRUE and FALSE values
+```{r}
+ibutton_SP$isDay %>% table()
+ibutton_BB$isDay %>% table()
+```
+
+The data is clean, but is not necessarily tidy. Following the tidy data principles this table is too 'wide' and must be converted to a long format. The site names (e.g. L1, M2...) should be values in a column named 'Site'. The resulting table will have only 6 columns: `Date` `Time` `isDay` `Site` `Temperature` `isSubmerged`  
+In order to achieve this structure the Temperature and isSubmerged columns will be separated into separate tables, then each table will be lengthened, and finally the tables will be recombined.
+
+```{r}
+# select out isSubmerged columns into separate df
+ibutton_SP_subm <- ibutton_SP %>% dplyr::select(ends_with("isSubmerged"))
+
+# pivot_longer temperature table
+ibutton_SP_temp <- ibutton_SP %>%
+  tidyr::pivot_longer(
+    cols = ends_with("Temperature"),
+    names_to = c("Site","eraseMe"),
+    values_to = "Temperature",
+    values_drop_na = FALSE,
+    names_sep = "_"
+    ) %>%
+  dplyr::select(Date, Time, isDay, Site, Temperature)
+
+# pivot_longer isSubmerged table
+ibutton_SP_subm <- ibutton_SP_subm %>%
+  tidyr::pivot_longer(
+    cols = ends_with("isSubmerged"),
+    names_to = c("Site", "eraseMe"),
+    values_to = "isSubmerged",
+    values_drop_na = FALSE,
+    names_sep = "_"
+  ) %>% dplyr::select(-eraseMe)
+
+# recombine
+ibutton_SP <- tibble::add_column(ibutton_SP_temp, isSubmerged = ibutton_SP_subm$isSubmerged, .after = "Temperature")
+```
+
+This chunk is then mirrored for `ibutton_BB`
+
+```{r echo=FALSE, results='hide', message=FALSE, warning=FALSE}
+# select out isSubmerged columns into separate df
+ibutton_BB_subm <- ibutton_BB %>% select(ends_with("isSubmerged"))
+
+# pivot_longer both df
+ibutton_BB_temp <- ibutton_BB %>%
+  pivot_longer(
+    cols = ends_with("Temperature"),
+    names_to = c("Site","eraseMe"),
+    values_to = "Temperature",
+    values_drop_na = FALSE,
+    names_sep = "_"
+  ) %>%
+  select(Date, Time, isDay, Site, Temperature)
+
+ibutton_BB_subm <- ibutton_BB_subm %>%
+  pivot_longer(
+    cols = ends_with("isSubmerged"),
+    names_to = c("Site", "eraseMe"),
+    values_to = "isSubmerged",
+    values_drop_na = FALSE,
+    names_sep = "_"
+  ) %>% select(-eraseMe)
+
+ibutton_BB <- add_column(ibutton_BB_temp, isSubmerged = ibutton_BB_subm$isSubmerged, .after = "Temperature")
+```
+
+Now that the tables are long they are visually less appealing, but they are
+far more handy to analyze in R
+
+```{r}
+visdat::vis_dat(ibutton_SP, sort_type = FALSE, warn_large_data = FALSE)
+visdat::vis_dat(ibutton_BB, sort_type = FALSE, warn_large_data = FALSE)
+```
+
+Save the output
+```{r eval=FALSE}
+write_csv(ibutton_SP, "/Users/smcatee/Desktop/TF/IBUTTON/IBUTTON_ANALYSIS_SAMPLE_SP.csv")
+write_csv(ibutton_BB, "/Users/smcatee/Desktop/TF/IBUTTON/IBUTTON_ANALYSIS_SAMPLE_BB.csv")
+```
+
